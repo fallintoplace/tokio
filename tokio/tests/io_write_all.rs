@@ -62,8 +62,9 @@ async fn write_all() {
 #[tokio::test]
 async fn write_all_retries_interrupted() {
     let mut mock = Builder::new()
+        .write(b"he")
         .write_error(io::Error::from(io::ErrorKind::Interrupted))
-        .write(b"hello")
+        .write(b"llo")
         .build();
 
     mock.write_all(b"hello").await.unwrap();

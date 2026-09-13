@@ -163,8 +163,9 @@ async fn write_all_buf_vectored() {
 #[tokio::test]
 async fn write_all_buf_retries_interrupted() {
     let mut mock = Builder::new()
+        .write(b"he")
         .write_error(io::Error::from(io::ErrorKind::Interrupted))
-        .write(b"hello")
+        .write(b"llo")
         .build();
     let mut buf = Bytes::from_static(b"hello");
 
