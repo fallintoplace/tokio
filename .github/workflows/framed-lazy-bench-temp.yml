@@ -1,0 +1,108 @@
+name: Temporary Framed allocation benchmark
+on:
+  push:
+    branches:
+      - bench/framed-lazy-ci-20261021
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: Same-runner base vs PR benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Prepare both exact commits and compile the identical Rust harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Runner CPU:"
+          lscpu | grep -E 'Model name|CPU\(s\)|Architecture' | head -6 || true
+          rustc --version
+          cargo --version
+          BASE=cffdc7601134598cebc45d03af0358dedfcb3ff1
+          PR=e3766e7977c5055256e43306fd3311307bc463d9
+          git cat-file -e "$BASE^{commit}" || git fetch origin "$BASE" --depth=1
+          git cat-file -e "$PR^{commit}" || git fetch origin "$PR" --depth=1
+          git worktree add --detach "$RUNNER_TEMP/tokio-base" "$BASE"
+          git worktree add --detach "$RUNNER_TEMP/tokio-pr" "$PR"
+          cp tokio-util/examples/framed_lazy_benchmark_temp.rs "$RUNNER_TEMP/benchmark.rs"
+          for v in base pr; do
+            mkdir -p "$RUNNER_TEMP/tokio-$v/tokio-util/examples"
+            cp "$RUNNER_TEMP/benchmark.rs" "$RUNNER_TEMP/tokio-$v/tokio-util/examples/framed_lazy_benchmark_temp.rs"
+            CARGO_TARGET_DIR="$RUNNER_TEMP/shared-target" cargo build \
+              --manifest-path "$RUNNER_TEMP/tokio-$v/Cargo.toml" \
+              -p tokio-util --features codec --release \
+              --example framed_lazy_benchmark_temp --locked
+            cp "$RUNNER_TEMP/shared-target/release/examples/framed_lazy_benchmark_temp" "$RUNNER_TEMP/bench-$v"
+          done
+
+      - name: Benchmark construction and steady-state throughput
+        shell: bash
+        run: |
+          set -euo pipefail
+          RESULTS="$RUNNER_TEMP/framed-results.txt"
+          : > "$RESULTS"
+          for mode in idle_framed idle_read idle_write steady_read steady_write; do
+            case "$mode" in
+              idle_*) n=20000 ;;
+              *) n=2000000 ;;
+            esac
+            "$RUNNER_TEMP/bench-base" "$mode" "$n" >/dev/null
+            "$RUNNER_TEMP/bench-pr" "$mode" "$n" >/dev/null
+            for round in 1 2 3 4 5 6 7 8 9; do
+              if [ $((round % 2)) -eq 1 ]; then versions="base pr"; else versions="pr base"; fi
+              for version in $versions; do
+                printf 'SAMPLE version=%s round=%d ' "$version" "$round" | tee -a "$RESULTS"
+                "$RUNNER_TEMP/bench-$version" "$mode" "$n" | tee -a "$RESULTS"
+              done
+            done
+          done
+          python3 - "$RESULTS" <<'PY'
+          import re
+          import statistics
+          import sys
+          from collections import defaultdict
+
+          results = defaultdict(list)
+          for line in open(sys.argv[1]):
+              found = dict(re.findall(r"(\w+)=([^\s]+)", line))
+              results[(found["mode"], found["version"])].append(found)
+
+          print("SUMMARY (median of 9 alternated runs, after one warmup per version/mode)")
+          print("base=cffdc7601134598cebc45d03af0358dedfcb3ff1")
+          print("pr=e3766e7977c5055256e43306fd3311307bc463d9")
+          print("All timings include benchmark loop only; no process launch or drop cost.")
+          summary = [
+              "### Framed buffer benchmark (Ubuntu 24.04, same runner, Rust release mode)",
+              "",
+              "Base cffdc760 vs PR e3766e79. Medians of nine alternating runs after warm-up.",
+              "",
+              "| Workload | Base | PR | Change | Base allocations | PR allocations |",
+              "| --- | ---: | ---: | ---: | ---: | ---: |",
+          ]
+          for mode in ["idle_framed", "idle_read", "idle_write", "steady_read", "steady_write"]:
+              b = results[(mode, "base")]
+              p = results[(mode, "pr")]
+              assert len(b) == len(p) == 9, (mode, len(b), len(p))
+              val = lambda group, key: statistics.median(int(a[key]) for a in group)
+              bt = val(b, "elapsed_ns") / 1e6
+              pt = val(p, "elapsed_ns") / 1e6
+              ba = val(b, "alloc_calls")
+              pa = val(p, "alloc_calls")
+              bb = val(b, "requested_alloc_bytes")
+              pb = val(p, "requested_alloc_bytes")
+              delta = (pt / bt - 1) * 100
+              print(f"{mode}: n={b[0]['n']}; base={bt:.3f}ms pr={pt:.3f}ms time_delta={delta:+.1f}% base_allocs={ba:g} pr_allocs={pa:g} base_requested_alloc_bytes={bb:g} pr_requested_alloc_bytes={pb:g}")
+              summary.append(f"| {mode} ({b[0]['n']} operations) | {bt:.3f} ms | {pt:.3f} ms | {delta:+.1f}% | {ba:g} | {pa:g} |")
+          with open("/tmp/benchmark-summary.md", "w") as f:
+              f.write("\n".join(summary) + "\n")
+          PY
+          cat /tmp/benchmark-summary.md >> "$GITHUB_STEP_SUMMARY"
