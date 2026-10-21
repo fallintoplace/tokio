@@ -34,15 +34,42 @@ jobs:
           git worktree add --detach "$RUNNER_TEMP/tokio-base" "$BASE"
           git worktree add --detach "$RUNNER_TEMP/tokio-pr" "$PR"
           cp tokio-util/examples/framed_lazy_benchmark_temp.rs "$RUNNER_TEMP/benchmark.rs"
+          python3 - "$RUNNER_TEMP/benchmark.rs" <<'PY'
+          import sys
+          from pathlib import Path
+          p = Path(sys.argv[1])
+          source = p.read_text()
+          needle = '        "idle_framed" => {'
+          insertion = """        "probe" => {
+                      let full = Framed::new((), ());
+                      let read = FramedRead::new((), ());
+                      let write = FramedWrite::new((), ());
+                      println!("PROBE full_read={} full_write={} reader={} writer={}",
+                          full.read_buffer().capacity(),
+                          full.write_buffer().capacity(),
+                          read.read_buffer().capacity(),
+                          write.write_buffer().capacity());
+                  },
+          """
+          assert source.count(needle) == 1
+          p.write_text(source.replace(needle, insertion + needle))
+          PY
           for v in base pr; do
             mkdir -p "$RUNNER_TEMP/tokio-$v/tokio-util/examples"
             cp "$RUNNER_TEMP/benchmark.rs" "$RUNNER_TEMP/tokio-$v/tokio-util/examples/framed_lazy_benchmark_temp.rs"
-            CARGO_TARGET_DIR="$RUNNER_TEMP/shared-target" cargo build \
+            CARGO_TARGET_DIR="$RUNNER_TEMP/target-$v" cargo build \
               --manifest-path "$RUNNER_TEMP/tokio-$v/Cargo.toml" \
               -p tokio-util --features codec --release \
               --example framed_lazy_benchmark_temp
-            cp "$RUNNER_TEMP/shared-target/release/examples/framed_lazy_benchmark_temp" "$RUNNER_TEMP/bench-$v"
+            cp "$RUNNER_TEMP/target-$v/release/examples/framed_lazy_benchmark_temp" "$RUNNER_TEMP/bench-$v"
+            "$RUNNER_TEMP/bench-$v" probe 1
           done
+          BASE_PROBE="$("$RUNNER_TEMP/bench-base" probe 1)"
+          PR_PROBE="$("$RUNNER_TEMP/bench-pr" probe 1)"
+          echo "Base capacity: $BASE_PROBE"
+          echo "PR capacity: $PR_PROBE"
+          [[ "$BASE_PROBE" == *"full_read=8192 full_write=8192"* ]]
+          [[ "$PR_PROBE" == *"full_read=0 full_write=0"* ]]
 
       - name: Benchmark construction and steady-state throughput
         shell: bash
