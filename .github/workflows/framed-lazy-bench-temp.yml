@@ -57,7 +57,7 @@ jobs:
           additional = """        "lines_read" => {
                       let mut data = Vec::with_capacity((count + 1) * 12);
                       for _ in 0..(count + 1) {
-                          data.extend_from_slice(b"hello world\n");
+                          data.extend_from_slice(b"hello world\\n");
                       }
                       let mut reader = FramedRead::new(&data[..], tokio_util::codec::LinesCodec::new());
                       let mut cx = Context::from_waker(Waker::noop());
