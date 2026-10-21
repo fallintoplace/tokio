@@ -40,7 +40,7 @@ jobs:
             CARGO_TARGET_DIR="$RUNNER_TEMP/shared-target" cargo build \
               --manifest-path "$RUNNER_TEMP/tokio-$v/Cargo.toml" \
               -p tokio-util --features codec --release \
-              --example framed_lazy_benchmark_temp --locked
+              --example framed_lazy_benchmark_temp
             cp "$RUNNER_TEMP/shared-target/release/examples/framed_lazy_benchmark_temp" "$RUNNER_TEMP/bench-$v"
           done
 
